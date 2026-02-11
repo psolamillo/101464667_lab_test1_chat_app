@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat App</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/style.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+    <div id="joinSection">
+        <div class="join-card">
+            <h2>Chat app</h2>
+            <div class="mb-3">
+                <label for="displayUsername" class="form-label">Username</label>
+                <input type="text" class="form-control" id="displayUsername" readonly>
+            </div>
+            <div class="mb-3">
+                <label for="roomSelect" class="form-label">Room</label>
+                <select class="form-select" id="roomSelect">
+                    <option value="devops">DevOps</option>
+                    <option value="cloud computing">Cloud Computing</option>
+                    <option value="covid19">Covid19</option>
+                    <option value="sports">Sports</option>
+                    <option value="nodeJS">NodeJS</option>
+                    <option value="news">News</option>
+                </select>
+            </div>
+            <button class="btn btn-primary w-100" id="joinRoomBtn">Join Chat Room</button>
+            <hr>
+            <button class="btn btn-outline-danger w-100" id="logoutBtnJoin">Logout</button>
+        </div>
+    </div>
+
+    <div id="chatSection">
+        <div class="chat-header">
+            <h4>Chat app</h4>
+            <div>
+                <button class="btn btn-outline-light btn-sm" id="leaveRoomBtn">Leave Room</button>
+                <button class="btn btn-outline-light btn-sm ms-2" id="logoutBtnChat">Logout</button>
+            </div>
+        </div>
+        <div class="chat-container">
+            
+            <div class="chat-sidebar">
+                <h6>Room: <span id="currentRoom"></span></h6>
+                <h6>Members:</h6>
+                <div id="membersList"></div>
+                <hr>
+                <small>Click a member to send a private message</small>
+                <div id="privateChatTarget" class="mt-2" hidden>
+                    <span>PM to: <strong id="pmTargetName"></strong></span>
+                    <button class="btn btn-sm btn-outline-light mt-1" id="cancelPM">Cancel PM</button>
+                </div>
+            </div>
+            
+            <div class="chat-main">
+                <div class="chat-messages" id="chatMessages"></div>
+                <div id="typingIndicator"></div>
+                <div class="chat-input-area">
+                    <input type="text" class="form-control" id="messageInput" placeholder="Type your message here...">
+                    <button class="btn btn-success" id="sendBtn">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check if login
+        const username = localStorage.getItem('chat_username');
+        if (!username) {
+            window.location.href = '/login';
+        }
+
+        $('#displayUsername').val(username);
+
+        var ioClient = io();
+        var currentRoom = null;
+        var privateTarget = null;
+        var typingTimeout = null;
+
+        ioClient.on('connect', function() {
+            ioClient.emit('register_user', username);
+        });
+
+        $('#joinRoomBtn').on('click', function() {
+            const room = $('#roomSelect').val();
+            currentRoom = room;
+            ioClient.emit('join_room', room);
+
+            $('#joinSection').hide();
+            $('#chatSection').show();
+            $('#currentRoom').text(room);
+            $('#chatMessages').html('');
+        });
+
+        $('#leaveRoomBtn').on('click', function() {
+            ioClient.emit('leave_room');
+            currentRoom = null;
+            privateTarget = null;
+            $('#privateChatTarget').prop('hidden', true);
+            $('#chatSection').hide();
+            $('#joinSection').show();
+        });
+
+        function logout() {
+            if (currentRoom) {
+                ioClient.emit('leave_room');
+            }
+            localStorage.removeItem('chat_username');
+            localStorage.removeItem('chat_firstname');
+            localStorage.removeItem('chat_lastname');
+            window.location.href = '/login';
+        }
+        $('#logoutBtnJoin').on('click', logout);
+        $('#logoutBtnChat').on('click', logout);
+
+        ioClient.on('room_members', function(members) {
+            $('#membersList').html('');
+            members.forEach(function(member) {
+                var div = $('<div class="member"></div>').text(member);
+                if (member !== username) {
+                    div.on('click', function() {
+                        privateTarget = member;
+                        $('#pmTargetName').text(member);
+                        $('#privateChatTarget').prop('hidden', false);
+                        $('#messageInput').attr('placeholder', 'Private message to ' + member + '...');
+                    });
+                }
+                $('#membersList').append(div);
+            });
+        });
+
+        // Cancel private message mode
+        $('#cancelPM').on('click', function() {
+            privateTarget = null;
+            $('#privateChatTarget').prop('hidden', true);
+            $('#messageInput').attr('placeholder', 'Type your message here...');
+        });
+
+        function sendMessage() {
+            var msg = $('#messageInput').val().trim();
+            if (!msg) return;
+
+            if (privateTarget) {
+                // Private message
+                ioClient.emit('private_message', {
+                    from_user: username,
+                    to_user: privateTarget,
+                    message: msg
+                });
+            } else {
+                // Group message
+                ioClient.emit('group_message', {
+                    from_user: username,
+                    message: msg
+                });
+            }
+
+            ioClient.emit('stop_typing', { username: username, to_user: privateTarget || null });
+            $('#messageInput').val('');
+        }
+
+        $('#sendBtn').on('click', sendMessage);
+        $('#messageInput').on('keypress', function(e) {
+            if (e.which === 13) {
+                sendMessage();
+            }
+        });
+
+        // --- TYPING INDICATOR ---
+        $('#messageInput').on('input', function() {
+            ioClient.emit('typing', { username: username, to_user: privateTarget || null });
+
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(function() {
+                ioClient.emit('stop_typing', { username: username, to_user: privateTarget || null });
+            }, 1500);
+        });
+
+        ioClient.on('user_typing', function(data) {
+            if (data.isPrivate) {
+                $('#typingIndicator').text(data.username + ' is typing a private message...');
+            } else {
+                $('#typingIndicator').text(data.username + ' is typing...');
+            }
+        });
+
+        ioClient.on('user_stop_typing', function(data) {
+            $('#typingIndicator').text('');
+        });
+
+        ioClient.on('group_message_client', function(data) {
+            appendMessage(data.from_user, data.message, data.date_sent, false);
+        });
+
+        ioClient.on('private_message_client', function(data) {
+            appendMessage(data.from_user, data.message, data.date_sent, true, data.to_user);
+        });
+
+        ioClient.on('load_messages', function(messages) {
+            messages.forEach(function(msg) {
+                appendMessage(msg.from_user, msg.message, msg.date_sent, false);
+            });
+        });
+
+        ioClient.on('user_joined', function(data) {
+            appendSystemMessage(data.username + ' has joined the chat');
+        });
+
+        ioClient.on('user_left', function(data) {
+            appendSystemMessage(data.username + ' has left the chat');
+        });
+
+        function appendMessage(sender, message, dateSent, isPrivate, toUser) {
+            var time = new Date(dateSent).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            var privateLabel = '';
+            if (isPrivate) {
+                var pmLabel = sender === username ? 'PM to ' + toUser : 'PM';
+                privateLabel = '<span class="private-label">' + pmLabel + '</span>';
+            }
+            var html = '<div class="msg-item">' +
+                '<div class="msg-sender">' + sender + ' ' + time + privateLabel + '</div>' +
+                '<div class="msg-text">' + escapeHtml(message) + '</div>' +
+                '</div>';
+            $('#chatMessages').append(html);
+            $('#chatMessages').scrollTop($('#chatMessages')[0].scrollHeight);
+        }
+
+        function appendSystemMessage(text) {
+            var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            var html = '<div class="msg-item system-msg">' +
+                '<div class="msg-sender">Chat App Bot ' + time + '</div>' +
+                '<div class="msg-text">' + escapeHtml(text) + '</div>' +
+                '</div>';
+            $('#chatMessages').append(html);
+            $('#chatMessages').scrollTop($('#chatMessages')[0].scrollHeight);
+        }
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(text));
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
